@@ -1,0 +1,151 @@
+{
+  "meta": {
+    "version": "1",
+    "last_updated": "2026-07-22T18:12:39Z",
+    "count": 5,
+    "generated_by": "build-catalog.sh",
+    "signature_fingerprint": "fa:84:7f:b0:0d:32:33:1e:df:83:71:00:78:0d:83:6c:02:b6:b4:c7:62:32:e1:2f:96:9e:dc:7f:22:2b:df:26"
+  },
+  "fonts": [
+    {
+      "id": "cascadia-code",
+      "name": "Cascadia Code",
+      "author": "Microsoft (Aaron Bell)",
+      "license": "OFL-1.1",
+      "description": "Fun, new monospaced font with ligatures, designed for terminals and code editors",
+      "version": "2404.23",
+      "revision": 1,
+      "source": {
+        "url": "https://github.com/microsoft/cascadia-code/releases/download/v2404.23/CascadiaCode-2404.23.zip",
+        "sha256": "a911410626c0e09d03fa3fdda827188fda96607df50fecc3c5fee5906e33251b",
+        "format": "zip"
+      },
+      "install": {
+        "strip_components": 0,
+        "include": [
+          "ttf/*.ttf"
+        ],
+        "exclude": []
+      },
+      "homepage": "https://github.com/microsoft/cascadia-code",
+      "repository": "https://github.com/microsoft/cascadia-code",
+      "tags": [
+        "monospace",
+        "programming",
+        "ligatures",
+        "nerd-font"
+      ]
+    },
+    {
+      "id": "fira-code",
+      "name": "Fira Code",
+      "author": "Nikita Prokopov (tonsky)",
+      "license": "OFL-1.1",
+      "description": "Monospaced font with programming ligatures",
+      "version": "6.2",
+      "revision": 1,
+      "source": {
+        "url": "https://github.com/tonsky/FiraCode/releases/download/6.2/Fira_Code_v6.2.zip",
+        "sha256": "0949915ba8eb24d89fd93d10a7ff623f42830d7c5ffc3ecbf960e4ecad3e3e79",
+        "format": "zip"
+      },
+      "install": {
+        "strip_components": 0,
+        "include": [
+          "ttf/*.ttf",
+          "variable_ttf/*.ttf"
+        ],
+        "exclude": []
+      },
+      "homepage": "https://github.com/tonsky/FiraCode",
+      "repository": "https://github.com/tonsky/FiraCode",
+      "tags": [
+        "monospace",
+        "programming",
+        "ligatures"
+      ]
+    },
+    {
+      "id": "hack",
+      "name": "Hack",
+      "author": "Source Foundry (Chris Simpkins)",
+      "license": "MIT",
+      "description": "Typeface designed for source code, based on Bitstream Vera and DejaVu",
+      "version": "3.003",
+      "revision": 1,
+      "source": {
+        "url": "https://github.com/source-foundry/Hack/releases/download/v3.003/Hack-v3.003-ttf.zip",
+        "sha256": "0c2604631b1f055041c68a0e09ae4801acab6c5072ba2db6a822f53c3f8290ac",
+        "format": "zip"
+      },
+      "install": {
+        "strip_components": 0,
+        "include": [
+          "ttf/*.ttf"
+        ],
+        "exclude": []
+      },
+      "homepage": "https://sourcefoundry.org/hack/",
+      "repository": "https://github.com/source-foundry/Hack",
+      "tags": [
+        "monospace",
+        "programming"
+      ]
+    },
+    {
+      "id": "ibm-plex-mono",
+      "name": "IBM Plex Mono",
+      "author": "IBM (Mike Abbink, Bold Monday)",
+      "license": "OFL-1.1",
+      "description": "IBM's corporate monospaced typeface, part of the Plex superfamily",
+      "version": "2.5.0",
+      "revision": 1,
+      "source": {
+        "url": "https://github.com/IBM/plex/releases/download/@ibm/plex-mono@2.5.0/ibm-plex-mono.zip",
+        "sha256": "6d23f01257663d8cc49a0d64c22ced630b79e0e2a0ac08a0da86e9a38bbc481c",
+        "format": "zip"
+      },
+      "install": {
+        "strip_components": 1,
+        "include": [
+          "fonts/complete/ttf/*.ttf"
+        ],
+        "exclude": []
+      },
+      "homepage": "https://www.ibm.com/plex/",
+      "repository": "https://github.com/IBM/plex",
+      "tags": [
+        "monospace",
+        "programming"
+      ]
+    },
+    {
+      "id": "jetbrains-mono",
+      "name": "JetBrains Mono",
+      "author": "JetBrains",
+      "license": "OFL-1.1",
+      "description": "Typeface made for developers, with increased x-height and ligatures",
+      "version": "2.304",
+      "revision": 1,
+      "source": {
+        "url": "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip",
+        "sha256": "6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf",
+        "format": "zip"
+      },
+      "install": {
+        "strip_components": 1,
+        "include": [
+          "ttf/*.ttf"
+        ],
+        "exclude": []
+      },
+      "homepage": "https://www.jetbrains.com/lp/mono/",
+      "repository": "https://github.com/JetBrains/JetBrainsMono",
+      "tags": [
+        "monospace",
+        "programming",
+        "ligatures"
+      ]
+    }
+  ]
+}
