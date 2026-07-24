@@ -8,12 +8,12 @@
 #define GLYPH_USER_AGENT "glyph/0.1"
 #define GLYPH_DB_FORMAT 1
 
-/* Catalog discovery endpoint: the latest release of the glyph-catalog Forgejo
+/* Catalog discovery endpoint: the latest release of the glyph-catalog GitHub
  * repo. The signed catalog exists ONLY as a release asset, never in branches;
  * `index update` resolves the `catalog.json` / `catalog.json.sig2` assets by
  * exact name from this release object. There is no URL override in v1. */
 #define GLYPH_CATALOG_RELEASES_API \
-    "https://codeberg.org/api/v1/repos/julbey/glyph-catalog/releases/latest"
+    "https://api.github.com/repos/JulB3y/glyph-catalog/releases/latest"
 
 /* Exit codes (see pln-c-repo.md section 8). */
 enum {

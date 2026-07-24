@@ -47,6 +47,7 @@
 #include <unistd.h>
 
 static bool g_no_cache = false;
+static bool g_verbose = false;
 
 /* ---------------------------------------------------------------------------
  * usage
@@ -68,6 +69,7 @@ static void usage(FILE *out)
         "  upgrade [--all] [<id>]    Upgrade one font (or all installed fonts)\n\n"
         "Common options:\n"
         "  --no-cache                Skip fontconfig cache refresh\n"
+        "  -v, --verbose             Show full fc-cache output during refresh\n"
         "  --debug                   Enable diagnostic tracing (or GLYPH_DEBUG=1)\n"
         "  -h, --help                Show this help\n"
         "  -v, --version             Show the glyph version\n\n"
@@ -887,19 +889,23 @@ static int cmd_install(int argc, char **argv)
 {
     static const struct option lopts[] = {
         {"no-cache", no_argument, 0, 'N'},
+        {"verbose",  no_argument, 0, 'v'},
         {"help",     no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
     optind = 2;
     for (;;) {
         int idx = 0;
-        int c = getopt_long(argc, argv, "Nh", lopts, &idx);
+        int c = getopt_long(argc, argv, "Nvh", lopts, &idx);
         if (c == -1) {
             break;
         }
         switch (c) {
         case 'N':
             g_no_cache = true;
+            break;
+        case 'v':
+            g_verbose = true;
             break;
         case 'h':
             usage(stdout);
@@ -1004,6 +1010,14 @@ static int cmd_install(int argc, char **argv)
         if (glyph_db_save(&db) != 0) {
             glyph_log_warn("could not persist install database");
         }
+        const glyph_font_t *f = glyph_catalog_find(&cat, id);
+        if (f != NULL && f->version != NULL) {
+            printf("installed %s %s\n", id, f->version);
+        } else {
+            printf("installed %s\n", id);
+        }
+    } else if (rc == GLYPH_EXIT_ALREADY_INSTALLED) {
+        printf("%s already installed\n", id);
     }
 
     glyph_db_free(&db);
@@ -1012,7 +1026,7 @@ static int cmd_install(int argc, char **argv)
     free(spec_c);
 
     if (rc == GLYPH_EXIT_OK && !g_no_cache) {
-        if (fc_cache_refresh(false) != 0) {
+        if (fc_cache_refresh(false, g_verbose) != 0) {
             glyph_log_warn("fc-cache refresh failed (continuing)");
         }
     }
@@ -1027,19 +1041,23 @@ static int cmd_remove(int argc, char **argv)
 {
     static const struct option lopts[] = {
         {"no-cache", no_argument, 0, 'N'},
+        {"verbose",  no_argument, 0, 'v'},
         {"help",     no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
     optind = 2;
     for (;;) {
         int idx = 0;
-        int c = getopt_long(argc, argv, "Nh", lopts, &idx);
+        int c = getopt_long(argc, argv, "Nvh", lopts, &idx);
         if (c == -1) {
             break;
         }
         switch (c) {
         case 'N':
             g_no_cache = true;
+            break;
+        case 'v':
+            g_verbose = true;
             break;
         case 'h':
             usage(stdout);
@@ -1114,12 +1132,13 @@ static int cmd_remove(int argc, char **argv)
     if (glyph_db_save(&db) != 0) {
         glyph_log_warn("could not persist install database");
     }
+    printf("removed %s\n", id);
 
     glyph_db_free(&db);
     glyph_lock_release(lk);
 
     if (!g_no_cache) {
-        if (fc_cache_refresh(false) != 0) {
+        if (fc_cache_refresh(false, g_verbose) != 0) {
             glyph_log_warn("fc-cache refresh failed (continuing)");
         }
     }
@@ -1136,13 +1155,14 @@ static int cmd_upgrade(int argc, char **argv)
     static const struct option lopts[] = {
         {"all",      no_argument, 0, 'a'},
         {"no-cache", no_argument, 0, 'N'},
+        {"verbose",  no_argument, 0, 'v'},
         {"help",     no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
     optind = 2;
     for (;;) {
         int idx = 0;
-        int c = getopt_long(argc, argv, "aNh", lopts, &idx);
+        int c = getopt_long(argc, argv, "aNvh", lopts, &idx);
         if (c == -1) {
             break;
         }
@@ -1152,6 +1172,9 @@ static int cmd_upgrade(int argc, char **argv)
             break;
         case 'N':
             g_no_cache = true;
+            break;
+        case 'v':
+            g_verbose = true;
             break;
         case 'h':
             usage(stdout);
@@ -1194,6 +1217,7 @@ static int cmd_upgrade(int argc, char **argv)
 
     int final_rc = GLYPH_EXIT_OK;
     bool changed = false;
+    size_t n_upgraded = 0;
 
     if (all) {
         /* Snapshot ids first: do_install may realloc db.fonts. */
@@ -1235,14 +1259,27 @@ static int cmd_upgrade(int argc, char **argv)
                 strcmp(inst->version, f2->version) == 0) {
                 continue; /* already up to date */
             }
+            char *old_ver = (inst != NULL && inst->version != NULL)
+                                ? glyph_strdup(inst->version)
+                                : NULL;
             int irc = do_install(&db, &cat, this_id, NULL, 0);
             if (irc == GLYPH_EXIT_OK) {
                 changed = true;
+                n_upgraded++;
+                if (old_ver != NULL && f2->version != NULL) {
+                    printf("upgraded %s %s -> %s\n", this_id, old_ver,
+                           f2->version);
+                } else {
+                    printf("upgraded %s\n", this_id);
+                }
             } else if (irc == GLYPH_EXIT_ALREADY_INSTALLED ||
                        irc == GLYPH_EXIT_NOT_FOUND) {
                 /* skip */
             } else {
                 final_rc = irc;
+            }
+            free(old_ver);
+            if (final_rc != GLYPH_EXIT_OK) {
                 break;
             }
         }
@@ -1266,12 +1303,36 @@ static int cmd_upgrade(int argc, char **argv)
             strcmp(inst->version, f2->version) == 0) {
             printf("%s already up to date\n", id);
         } else {
+            char *old_ver = (inst != NULL && inst->version != NULL)
+                                ? glyph_strdup(inst->version)
+                                : NULL;
             int irc = do_install(&db, &cat, id, NULL, 0);
             if (irc == GLYPH_EXIT_OK) {
                 changed = true;
+                n_upgraded++;
+                if (old_ver != NULL && f2->version != NULL) {
+                    printf("upgraded %s %s -> %s\n", id, old_ver,
+                           f2->version);
+                } else if (inst == NULL && f2->version != NULL) {
+                    printf("installed %s %s\n", id, f2->version);
+                } else if (inst == NULL) {
+                    printf("installed %s\n", id);
+                } else {
+                    printf("upgraded %s\n", id);
+                }
             } else {
                 final_rc = irc;
             }
+            free(old_ver);
+        }
+    }
+
+    if (all) {
+        if (n_upgraded > 0) {
+            printf("upgraded %zu font%s\n", n_upgraded,
+                   n_upgraded == 1 ? "" : "s");
+        } else if (final_rc == GLYPH_EXIT_OK) {
+            fputs("all fonts up to date\n", stdout);
         }
     }
 
@@ -1286,7 +1347,7 @@ static int cmd_upgrade(int argc, char **argv)
     glyph_lock_release(lk);
 
     if (changed && final_rc == GLYPH_EXIT_OK && !g_no_cache) {
-        if (fc_cache_refresh(false) != 0) {
+        if (fc_cache_refresh(false, g_verbose) != 0) {
             glyph_log_warn("fc-cache refresh failed (continuing)");
         }
     }
