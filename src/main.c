@@ -40,6 +40,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <libgen.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1005,6 +1006,10 @@ static int cmd_install(int argc, char **argv)
     /* Missing DB is fine on first install. */
     (void)glyph_db_load(&db);
 
+    /* Defer the success line until after the (slow) fc-cache refresh so it
+     * is the final stdout output. id aliases spec_c (freed last); the catalog
+     * version is duplicated since the catalog is freed below. */
+    char *out_ver = NULL;
     rc = do_install(&db, &cat, id, pin_ver, pin_rev);
     if (rc == GLYPH_EXIT_OK) {
         if (glyph_db_save(&db) != 0) {
@@ -1012,24 +1017,32 @@ static int cmd_install(int argc, char **argv)
         }
         const glyph_font_t *f = glyph_catalog_find(&cat, id);
         if (f != NULL && f->version != NULL) {
-            printf("installed %s %s\n", id, f->version);
-        } else {
-            printf("installed %s\n", id);
+            out_ver = glyph_strdup(f->version);
         }
-    } else if (rc == GLYPH_EXIT_ALREADY_INSTALLED) {
-        printf("%s already installed\n", id);
     }
 
     glyph_db_free(&db);
     glyph_catalog_free(&cat);
     glyph_lock_release(lk);
-    free(spec_c);
 
     if (rc == GLYPH_EXIT_OK && !g_no_cache) {
         if (fc_cache_refresh(false, g_verbose) != 0) {
             glyph_log_warn("fc-cache refresh failed (continuing)");
         }
     }
+
+    if (rc == GLYPH_EXIT_OK) {
+        if (out_ver != NULL) {
+            printf("installed %s %s\n", id, out_ver);
+        } else {
+            printf("installed %s\n", id);
+        }
+    } else if (rc == GLYPH_EXIT_ALREADY_INSTALLED) {
+        printf("%s already installed\n", id);
+    }
+    fflush(stdout);
+    free(out_ver);
+    free(spec_c);
     return rc;
 }
 
@@ -1132,7 +1145,6 @@ static int cmd_remove(int argc, char **argv)
     if (glyph_db_save(&db) != 0) {
         glyph_log_warn("could not persist install database");
     }
-    printf("removed %s\n", id);
 
     glyph_db_free(&db);
     glyph_lock_release(lk);
@@ -1142,7 +1154,52 @@ static int cmd_remove(int argc, char **argv)
             glyph_log_warn("fc-cache refresh failed (continuing)");
         }
     }
+    /* "removed" is the terminal stdout output, printed after fc-cache. */
+    printf("removed %s\n", id);
+    fflush(stdout);
     return GLYPH_EXIT_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * Deferred result-line buffer (used by cmd_upgrade)
+ * ------------------------------------------------------------------------- */
+
+/* Append a printf-formatted line to a growable array of owned strings. Used
+ * to collect stdout result lines during the work phase and emit them as the
+ * final output after the fc-cache refresh. Allocation failures are logged
+ * and the line is dropped (best-effort). */
+static void push_line(char ***arr, size_t *n, size_t *cap,
+                      const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int need = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    if (need < 0) {
+        return;
+    }
+
+    char *line = malloc((size_t)need + 1);
+    if (line == NULL) {
+        glyph_log_warn("out of memory formatting result line");
+        return;
+    }
+    va_start(ap, fmt);
+    vsnprintf(line, (size_t)need + 1, fmt, ap);
+    va_end(ap);
+
+    if (*n == *cap) {
+        size_t ncap = (*cap == 0) ? 8 : *cap * 2;
+        char **narr = realloc(*arr, ncap * sizeof(*narr));
+        if (narr == NULL) {
+            glyph_log_warn("out of memory formatting result line");
+            free(line);
+            return;
+        }
+        *arr = narr;
+        *cap = ncap;
+    }
+    (*arr)[(*n)++] = line;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1219,6 +1276,12 @@ static int cmd_upgrade(int argc, char **argv)
     bool changed = false;
     size_t n_upgraded = 0;
 
+    /* Deferred stdout result lines: collected during the work phase and
+     * emitted as the final output after the fc-cache refresh. Each entry is
+     * an owned malloc'd string appended via push_line(). */
+    char **lines = NULL;
+    size_t n_lines = 0, cap_lines = 0;
+
     if (all) {
         /* Snapshot ids first: do_install may realloc db.fonts. */
         size_t n_ids = db.n_fonts;
@@ -1267,10 +1330,12 @@ static int cmd_upgrade(int argc, char **argv)
                 changed = true;
                 n_upgraded++;
                 if (old_ver != NULL && f2->version != NULL) {
-                    printf("upgraded %s %s -> %s\n", this_id, old_ver,
-                           f2->version);
+                    push_line(&lines, &n_lines, &cap_lines,
+                              "upgraded %s %s -> %s\n", this_id, old_ver,
+                              f2->version);
                 } else {
-                    printf("upgraded %s\n", this_id);
+                    push_line(&lines, &n_lines, &cap_lines, "upgraded %s\n",
+                              this_id);
                 }
             } else if (irc == GLYPH_EXIT_ALREADY_INSTALLED ||
                        irc == GLYPH_EXIT_NOT_FOUND) {
@@ -1301,7 +1366,8 @@ static int cmd_upgrade(int argc, char **argv)
         const glyph_installed_font_t *inst = glyph_db_find(&db, id);
         if (inst != NULL && inst->version != NULL && f2->version != NULL &&
             strcmp(inst->version, f2->version) == 0) {
-            printf("%s already up to date\n", id);
+            push_line(&lines, &n_lines, &cap_lines, "%s already up to date\n",
+                      id);
         } else {
             char *old_ver = (inst != NULL && inst->version != NULL)
                                 ? glyph_strdup(inst->version)
@@ -1311,14 +1377,18 @@ static int cmd_upgrade(int argc, char **argv)
                 changed = true;
                 n_upgraded++;
                 if (old_ver != NULL && f2->version != NULL) {
-                    printf("upgraded %s %s -> %s\n", id, old_ver,
-                           f2->version);
+                    push_line(&lines, &n_lines, &cap_lines,
+                              "upgraded %s %s -> %s\n", id, old_ver,
+                              f2->version);
                 } else if (inst == NULL && f2->version != NULL) {
-                    printf("installed %s %s\n", id, f2->version);
+                    push_line(&lines, &n_lines, &cap_lines,
+                              "installed %s %s\n", id, f2->version);
                 } else if (inst == NULL) {
-                    printf("installed %s\n", id);
+                    push_line(&lines, &n_lines, &cap_lines, "installed %s\n",
+                              id);
                 } else {
-                    printf("upgraded %s\n", id);
+                    push_line(&lines, &n_lines, &cap_lines, "upgraded %s\n",
+                              id);
                 }
             } else {
                 final_rc = irc;
@@ -1329,10 +1399,10 @@ static int cmd_upgrade(int argc, char **argv)
 
     if (all) {
         if (n_upgraded > 0) {
-            printf("upgraded %zu font%s\n", n_upgraded,
-                   n_upgraded == 1 ? "" : "s");
+            push_line(&lines, &n_lines, &cap_lines, "upgraded %zu font%s\n",
+                      n_upgraded, n_upgraded == 1 ? "" : "s");
         } else if (final_rc == GLYPH_EXIT_OK) {
-            fputs("all fonts up to date\n", stdout);
+            push_line(&lines, &n_lines, &cap_lines, "all fonts up to date\n");
         }
     }
 
@@ -1351,6 +1421,17 @@ static int cmd_upgrade(int argc, char **argv)
             glyph_log_warn("fc-cache refresh failed (continuing)");
         }
     }
+
+    /* Result lines are the final stdout output, printed after the (slow)
+     * fc-cache refresh so they signal true completion. */
+    for (size_t i = 0; i < n_lines; i++) {
+        fputs(lines[i], stdout);
+    }
+    fflush(stdout);
+    for (size_t i = 0; i < n_lines; i++) {
+        free(lines[i]);
+    }
+    free(lines);
     return final_rc;
 }
 
