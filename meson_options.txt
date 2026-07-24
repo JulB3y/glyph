@@ -1,0 +1,16 @@
+# Build and register unit tests under tests/. Disable for faster builds.
+option(
+    'tests',
+    type: 'boolean',
+    value: true,
+    description: 'Build and run unit tests under tests/',
+)
+
+# Force vendored subprojects for cjson and miniz even when system packages
+# are available. Useful for reproducible builds and distro packaging.
+option(
+    'vendor-deps',
+    type: 'boolean',
+    value: false,
+    description: 'Force vendored Meson WrapDB subprojects for cjson and miniz',
+)
