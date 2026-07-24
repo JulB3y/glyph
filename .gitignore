@@ -1,0 +1,27 @@
+# meson/ninja build output
+/build/
+
+# wrap downloads (keep *.wrap, ignore fetched sources + cache)
+/subprojects/*
+!/subprojects/*.wrap
+
+# compiled artifacts
+*.o
+*.a
+*.so
+*.exe
+/glyph
+
+# compile_commands (meson can generate at root)
+/compile_commands.json
+
+# editor / OS
+*~
+*.swp
+.DS_Store
+.vscode/
+.idea/
+
+
+.pi/*
+openspec/*
