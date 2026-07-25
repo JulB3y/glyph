@@ -8,7 +8,7 @@ integrity and installs them properly
 follows the XDG Base Directory Specification.
 
 > [!NOTE]  
-> This project is build by the help of Gen-AI
+> This project is build with the help of Gen-AI
 
 
 ## Status
