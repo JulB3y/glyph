@@ -7,6 +7,10 @@ integrity and installs them properly
 `glyph` operates entirely in **user scope** (no `sudo`, no system files) and
 follows the XDG Base Directory Specification.
 
+> [!NOTE]  
+> This project is build by the help of Gen-AI
+
+
 ## Status
 
 This project is under heavy development with the first working version out (v0.1.0).
@@ -19,8 +23,8 @@ Requirements:
 - meson ≥ 0.56
 - ninja
 - libcurl ≥ 7.68
-- plus cJSON
-- miniz (via system packages or Meson WrapDB subprojects).
+- cJSON
+- miniz (optional as system package or automatically via Meson WrapDB subprojects).
 
 ```sh
 meson setup build
@@ -46,6 +50,8 @@ Commands:
   install <id>[@rev|==ver]  Install a font from the catalog
   remove <id>               Remove an installed font
   upgrade [--all] [<id>]    Upgrade one font (or all installed fonts)
+  completions <fish|install>
+                            Print or install shell completions
 
 Common options:
   --no-cache                Skip fontconfig cache refresh
@@ -61,6 +67,25 @@ Environment:
 Exit codes: `0` success, `1` generic error, `2` usage error, `3` network error,
 `4` integrity error, `5` not found, `6` already installed, `7` lock busy,
 `8` missing system dependency.
+
+## Shell completion
+
+fish shell completions are built in. 
+
+Install:
+```
+glyph completions install
+```
+
+Then restart fish (or `exec fish`). 
+
+To inspect the script without installing:
+```
+glyph completions fish > ~/.config/fish/completions/glyph.fish
+```
+
+Only fish is supported; bash/zsh are WIP (backend is
+designed to support them later).
 
 ## XDG paths
 
@@ -92,7 +117,7 @@ Defaults apply when the corresponding `XDG_*` variable is unset: `~/.local/share
 
 - **User-scope only** — no system fonts, no `sudo` install path.
 - **HTTPS-only** — plain `http://` URLs in the catalog are rejected.
-- **Linux only** — relies on `flock`, `fc-cache`, and XDG conventions.
+- **Linux only** — relies on `flock`, `fc-cache`
 
 ## License
 MIT — see [LICENSE](LICENSE).

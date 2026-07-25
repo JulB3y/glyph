@@ -108,6 +108,7 @@ glyph_pubkey_der_h = custom_target(
 
 sources = files(
     'src/main.c',
+    'src/complete.c',
     'src/manifest.c',
     'src/download.c',
     'src/verify.c',
@@ -143,8 +144,10 @@ if get_option('tests')
         'test_db':       files('src/db.c', 'src/util.c'),
         'test_extract':  files('src/extract.c', 'src/util.c'),
         'test_util':     files('src/util.c'),
+        'test_complete': files('src/complete.c', 'src/manifest.c', 'src/db.c',
+                               'src/util.c'),
     }
-    foreach tname : ['test_manifest', 'test_verify', 'test_db', 'test_extract', 'test_util']
+    foreach tname : ['test_manifest', 'test_verify', 'test_db', 'test_extract', 'test_util', 'test_complete']
         tpath = 'tests/@0@.c'.format(tname)
         if fs.exists(tpath)
             # test_verify compiles src/verify.c, which includes the generated

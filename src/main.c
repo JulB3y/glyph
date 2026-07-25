@@ -26,6 +26,7 @@
 
 #include "glyph.h"
 #include "util.h"
+#include "complete.h"
 #include "download.h"
 #include "verify.h"
 #include "manifest.h"
@@ -67,7 +68,9 @@ static void usage(FILE *out)
         "  info <id>                 Show details for a font\n"
         "  install <id>[@rev|==ver]  Install a font from the catalog\n"
         "  remove <id>               Remove an installed font\n"
-        "  upgrade [--all] [<id>]    Upgrade one font (or all installed fonts)\n\n"
+        "  upgrade [--all] [<id>]    Upgrade one font (or all installed fonts)\n"
+        "  completions <fish|install>\n"
+        "                            Print or install shell completions\n\n"
         "Common options:\n"
         "  --no-cache                Skip fontconfig cache refresh\n"
         "  -v, --verbose             Show full fc-cache output during refresh\n"
@@ -1436,6 +1439,62 @@ static int cmd_upgrade(int argc, char **argv)
 }
 
 /* ---------------------------------------------------------------------------
+ * Subcommand: completions
+ * ------------------------------------------------------------------------- */
+
+static int cmd_completions(int argc, char **argv)
+{
+    static const struct option lopts[] = {
+        {"help", no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
+    optind = 2;
+    for (;;) {
+        int idx = 0;
+        int c = getopt_long(argc, argv, "h", lopts, &idx);
+        if (c == -1) {
+            break;
+        }
+        switch (c) {
+        case 'h':
+            usage(stdout);
+            return GLYPH_EXIT_OK;
+        default:
+            usage(stderr);
+            return GLYPH_EXIT_USAGE;
+        }
+    }
+
+    const char *action = (optind < argc) ? argv[optind] : NULL;
+    if (action == NULL) {
+        usage(stderr);
+        return GLYPH_EXIT_USAGE;
+    }
+
+    if (strcmp(action, "fish") == 0) {
+        fputs(glyph_complete_fish_script(), stdout);
+        return GLYPH_EXIT_OK;
+    }
+
+    if (strcmp(action, "install") == 0) {
+        char *path = NULL;
+        if (glyph_complete_install_fish(&path) != 0) {
+            glyph_log_err("could not install fish completions: %s",
+                          strerror(errno));
+            return GLYPH_EXIT_ERROR;
+        }
+        glyph_log_info("installed fish completions to %s",
+                       path ? path : "(unknown)");
+        glyph_log_info("restart fish or run `exec fish` to enable");
+        free(path);
+        return GLYPH_EXIT_OK;
+    }
+
+    glyph_log_err("unsupported shell: %s (only fish is supported)", action);
+    return GLYPH_EXIT_USAGE;
+}
+
+/* ---------------------------------------------------------------------------
  * Entry point
  * ------------------------------------------------------------------------- */
 
@@ -1498,6 +1557,15 @@ int main(int argc, char **argv)
     }
     if (strcmp(cmd, "upgrade") == 0) {
         return cmd_upgrade(argc, argv);
+    }
+    if (strcmp(cmd, "completions") == 0) {
+        return cmd_completions(argc, argv);
+    }
+    if (strcmp(cmd, "__complete") == 0) {
+        /* Hidden completion backend; deliberately excluded from usage(). */
+        glyph_complete_emit((argc > 2) ? argv[2] : "",
+                            (argc > 3) ? argv[3] : "");
+        return GLYPH_EXIT_OK;
     }
 
     usage(stderr);
