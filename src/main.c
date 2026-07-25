@@ -50,6 +50,7 @@
 
 static bool g_no_cache = false;
 static bool g_verbose = false;
+static bool g_quiet = false;
 
 /* ---------------------------------------------------------------------------
  * usage
@@ -74,6 +75,7 @@ static void usage(FILE *out)
         "Common options:\n"
         "  --no-cache                Skip fontconfig cache refresh\n"
         "  -v, --verbose             Show full fc-cache output during refresh\n"
+        "  -q, --quiet               Suppress download progress output\n"
         "  --debug                   Enable diagnostic tracing (or GLYPH_DEBUG=1)\n"
         "  -h, --help                Show this help\n"
         "  -v, --version             Show the glyph version\n\n"
@@ -215,7 +217,7 @@ static int index_update(void)
 
     /* ---- release discovery ---- */
     if (glyph_download_memory_status(GLYPH_CATALOG_RELEASES_API, &meta,
-                                     &meta_len, &http_status) != 0) {
+                                     &meta_len, &http_status, NULL) != 0) {
         if (http_status == 404) {
             glyph_log_err("no catalog release published (%s returned 404)",
                           GLYPH_CATALOG_RELEASES_API);
@@ -285,12 +287,17 @@ static int index_update(void)
     }
 
     /* ---- download both assets ---- */
-    if (glyph_download_memory(cat_url, &cat_bytes, &cat_len) != 0) {
+    if (!g_quiet) {
+        fprintf(stderr, "  updating catalog\n");
+    }
+    glyph_dl_opts_t cat_opts = { .label = "catalog", .quiet = g_quiet,
+                                 .progress = true };
+    if (glyph_download_memory(cat_url, &cat_bytes, &cat_len, &cat_opts) != 0) {
         glyph_log_err("catalog download failed");
         ret = GLYPH_EXIT_NETWORK;
         goto out;
     }
-    if (glyph_download_memory(sig_url, &sig_bytes, &sig_len) != 0) {
+    if (glyph_download_memory(sig_url, &sig_bytes, &sig_len, NULL) != 0) {
         glyph_log_err("signature download failed");
         ret = GLYPH_EXIT_NETWORK;
         goto out;
@@ -339,7 +346,9 @@ static int index_update(void)
     glyph_log_debug("cache write: ok (catalog+sig+tag %s) elapsed=%.3fs",
                     tag, glyph_now_sec() - t_cache);
 
-    glyph_log_info("catalog updated to %s (%zu bytes)", tag, cat_len);
+    if (!g_quiet) {
+        fprintf(stderr, "  catalog updated to %s\n", tag);
+    }
     ret = GLYPH_EXIT_OK;
 
 out:
@@ -424,7 +433,13 @@ static int do_install(glyph_db_t *db, const glyph_catalog_t *cat,
                 rmrf(tmp); free(tmp);
                 return GLYPH_EXIT_ERROR;
             }
-            if (glyph_download_file(sf->url, dst, false) != 0) {
+            char dl_label[256];
+            snprintf(dl_label, sizeof(dl_label), "%s %s (%zu/%zu: %s)",
+                     id, f->version ? f->version : "?",
+                     i + 1, f->source.n_files, sf->name);
+            glyph_dl_opts_t dl_opts = { .label = dl_label, .quiet = g_quiet,
+                                        .progress = true };
+            if (glyph_download_file(sf->url, dst, false, &dl_opts) != 0) {
                 glyph_log_err("download failed: %s", sf->url);
                 free(dst);
                 rmrf(tmp); free(tmp);
@@ -529,7 +544,12 @@ static int do_install(glyph_db_t *db, const glyph_catalog_t *cat,
         return GLYPH_EXIT_ERROR;
     }
 
-    if (glyph_download_file(f->source.url, archive, false) != 0) {
+    char dl_label[256];
+    snprintf(dl_label, sizeof(dl_label), "%s %s",
+             id, f->version ? f->version : "?");
+    glyph_dl_opts_t dl_opts = { .label = dl_label, .quiet = g_quiet,
+                                .progress = true };
+    if (glyph_download_file(f->source.url, archive, false, &dl_opts) != 0) {
         glyph_log_err("download failed: %s", f->source.url);
         rmrf(tmp);
         free(archive);
@@ -597,6 +617,9 @@ static int cmd_index(int argc, char **argv)
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--no-cache") == 0) {
             g_no_cache = true;
+        } else if (strcmp(argv[i], "-q") == 0 ||
+                   strcmp(argv[i], "--quiet") == 0) {
+            g_quiet = true;
         } else if (strcmp(argv[i], "-h") == 0 ||
                    strcmp(argv[i], "--help") == 0) {
             usage(stdout);
@@ -894,13 +917,14 @@ static int cmd_install(int argc, char **argv)
     static const struct option lopts[] = {
         {"no-cache", no_argument, 0, 'N'},
         {"verbose",  no_argument, 0, 'v'},
+        {"quiet",    no_argument, 0, 'q'},
         {"help",     no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
     optind = 2;
     for (;;) {
         int idx = 0;
-        int c = getopt_long(argc, argv, "Nvh", lopts, &idx);
+        int c = getopt_long(argc, argv, "Nvqh", lopts, &idx);
         if (c == -1) {
             break;
         }
@@ -910,6 +934,9 @@ static int cmd_install(int argc, char **argv)
             break;
         case 'v':
             g_verbose = true;
+            break;
+        case 'q':
+            g_quiet = true;
             break;
         case 'h':
             usage(stdout);
@@ -1216,13 +1243,14 @@ static int cmd_upgrade(int argc, char **argv)
         {"all",      no_argument, 0, 'a'},
         {"no-cache", no_argument, 0, 'N'},
         {"verbose",  no_argument, 0, 'v'},
+        {"quiet",    no_argument, 0, 'q'},
         {"help",     no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
     optind = 2;
     for (;;) {
         int idx = 0;
-        int c = getopt_long(argc, argv, "aNvh", lopts, &idx);
+        int c = getopt_long(argc, argv, "aNvqh", lopts, &idx);
         if (c == -1) {
             break;
         }
@@ -1235,6 +1263,9 @@ static int cmd_upgrade(int argc, char **argv)
             break;
         case 'v':
             g_verbose = true;
+            break;
+        case 'q':
+            g_quiet = true;
             break;
         case 'h':
             usage(stdout);

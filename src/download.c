@@ -14,6 +14,8 @@
  *     libcurl; we fall back to the bitmask on older builds (>= 7.68).
  *   - Every exit path runs curl_easy_cleanup() and closes/frees whatever was
  *     opened; the memory variant frees its buffer on the error path.
+ *   - Progress reporting: TTY gets start/bar/finish; non-TTY gets one line;
+ *     label==NULL or quiet suppresses everything.
  */
 
 #ifndef _POSIX_C_SOURCE
@@ -38,7 +40,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>   /* strncasecmp */
+#include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 
 /* ---------------------------------------------------------------------------
  * Internal types
@@ -49,6 +54,20 @@ struct dlmem {
     char  *data;  /* malloc'd; never NULL on the success path when len > 0 */
     size_t len;   /* valid bytes stored                       */
     size_t cap;   /* allocated capacity (>= len)              */
+};
+
+/* Progress rendering context, passed as CURLOPT_XFERINFODATA. */
+struct dl_progress {
+    const char *label;
+    bool active;      /* label != NULL && !quiet */
+    bool show_bar;    /* active && progress */
+    bool is_tty;
+    int bar_cols;     /* inner bar columns, clamped [8,48] */
+    struct timespec t_start;
+    struct timespec t_last;
+    curl_off_t bytes_last;
+    double ema_speed; /* bytes/sec exponential moving average */
+    int n_samples;
 };
 
 /* ---------------------------------------------------------------------------
@@ -70,30 +89,177 @@ static void format_bytes(curl_off_t bytes, char *buf, size_t buflen)
     }
 }
 
-/* CURLOPT_XFERINFOFUNCTION: emit a single-line, carriage-return-updated
- * progress report to stderr. Divides are guarded against dltotal == 0.
+/* Terminal width of stderr; fallback 80. */
+static int term_cols(void)
+{
+    struct winsize ws;
+    if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+        return (int)ws.ws_col;
+    }
+    return 80;
+}
+
+/* Format seconds as mm:ss or h:mm:ss (≥ 1 h). */
+static void format_eta(double secs, char *buf, size_t buflen)
+{
+    if (secs < 0.0) {
+        secs = 0.0;
+    }
+    unsigned long s = (unsigned long)(secs + 0.5);
+    unsigned h = (unsigned)(s / 3600);
+    unsigned m = (unsigned)((s % 3600) / 60);
+    unsigned sec = (unsigned)(s % 60);
+    if (h > 0) {
+        snprintf(buf, buflen, "%u:%02u:%02u", h, m, sec);
+    } else {
+        snprintf(buf, buflen, "%02u:%02u", m, sec);
+    }
+}
+
+/* Initialise the progress context from caller-supplied opts. */
+static void progress_init(struct dl_progress *p, const glyph_dl_opts_t *opts)
+{
+    memset(p, 0, sizeof(*p));
+    if (opts == NULL || opts->label == NULL || opts->quiet) {
+        return;
+    }
+    p->label = opts->label;
+    p->active = true;
+    p->show_bar = opts->progress;
+    p->is_tty = (isatty(STDERR_FILENO) != 0);
+    if (p->show_bar && p->is_tty) {
+        int bc = term_cols() - 55; /* reserve for text portion */
+        if (bc < 8)  bc = 8;
+        if (bc > 48) bc = 48;
+        p->bar_cols = bc;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &p->t_start);
+    p->t_last = p->t_start;
+}
+
+/* Print the TTY start line. */
+static void progress_start(const struct dl_progress *p)
+{
+    if (p->active && p->is_tty) {
+        fprintf(stderr, "  downloading %s\n", p->label);
+        fflush(stderr);
+    }
+}
+
+/* Clear the in-place bar line (TTY only). */
+static void progress_clear_bar(const struct dl_progress *p)
+{
+    if (p->active && p->is_tty && p->show_bar) {
+        fputs("\r\033[K", stderr);
+    }
+}
+
+/* Print the finish report (TTY: finish line; non-TTY: single line). */
+static void progress_finish(const struct dl_progress *p, curl_off_t bytes)
+{
+    if (!p->active) {
+        return;
+    }
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double dt = (double)(now.tv_sec - p->t_start.tv_sec) +
+                (double)(now.tv_nsec - p->t_start.tv_nsec) * 1e-9;
+    char sz[32];
+    format_bytes(bytes, sz, sizeof sz);
+    if (p->is_tty) {
+        progress_clear_bar(p);
+        fprintf(stderr, "  finished %s in %.1fs\n", sz, dt);
+    } else {
+        fprintf(stderr, "  downloaded %s (%s in %.1fs)\n", p->label, sz, dt);
+    }
+    fflush(stderr);
+}
+
+/* CURLOPT_XFERINFOFUNCTION: EMA speed tracking + TTY bar rendering.
  * Returns 0 (never aborts the transfer). */
 static int xferinfo_cb(void *clientp, curl_off_t dltotal, curl_off_t dlnow,
                        curl_off_t ultotal, curl_off_t ulnow)
 {
-    (void)clientp;
     (void)ultotal;
     (void)ulnow;
+    struct dl_progress *p = (struct dl_progress *)clientp;
+    if (!p->show_bar) {
+        return 0;
+    }
 
-    char now_str[32];
-    char tot_str[32];
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
 
-    if (dltotal <= 0) {
-        /* Total size unknown (chunked / no Content-Length): show bytes only. */
-        format_bytes(dlnow, now_str, sizeof now_str);
-        fprintf(stderr, "  downloading... %s        \r", now_str);
-    } else {
+    /* EMA speed update (α ≈ 0.4). First delta initialises; subsequent
+     * deltas blend.  ETA suppressed until ≥ 2 samples. */
+    if (p->n_samples > 0) {
+        double dt = (double)(now.tv_sec - p->t_last.tv_sec) +
+                    (double)(now.tv_nsec - p->t_last.tv_nsec) * 1e-9;
+        if (dt > 0.001) {
+            double inst = (double)(dlnow - p->bytes_last) / dt;
+            if (p->n_samples == 1) {
+                p->ema_speed = inst;
+            } else {
+                p->ema_speed = 0.4 * inst + 0.6 * p->ema_speed;
+            }
+        }
+    }
+    p->n_samples++;
+    p->t_last = now;
+    p->bytes_last = dlnow;
+
+    if (!p->is_tty) {
+        return 0; /* non-TTY: single line emitted at completion */
+    }
+
+    /* ---- TTY bar rendering ---- */
+    char now_s[32], tot_s[32], spd_s[40], eta_s[32];
+    format_bytes(dlnow, now_s, sizeof now_s);
+
+    if (dltotal > 0) {
         curl_off_t have = (dlnow > dltotal) ? dltotal : dlnow;
-        double pct = 100.0 * (double)have / (double)dltotal;
-        format_bytes(dlnow, now_str, sizeof now_str);
-        format_bytes(dltotal, tot_str, sizeof tot_str);
-        fprintf(stderr, "  %5.1f%%  (%s / %s)        \r",
-                pct, now_str, tot_str);
+        int pct = (int)(100.0 * (double)have / (double)dltotal);
+        int filled = (int)((double)p->bar_cols * (double)have / (double)dltotal);
+        if (filled > p->bar_cols) filled = p->bar_cols;
+        if (filled < 0) filled = 0;
+        format_bytes(dltotal, tot_s, sizeof tot_s);
+
+        /* Build: \r[████░░░░] 100%  now / total  speed  eta mm:ss */
+        char line[512];
+        int pos = 0;
+        line[pos++] = '\r';
+        line[pos++] = '[';
+        for (int i = 0; i < filled; i++) {
+            line[pos++] = '\xe2'; line[pos++] = '\x96'; line[pos++] = '\x88'; /* █ */
+        }
+        for (int i = filled; i < p->bar_cols; i++) {
+            line[pos++] = '\xe2'; line[pos++] = '\x96'; line[pos++] = '\x91'; /* ░ */
+        }
+        line[pos++] = ']';
+        pos += snprintf(line + pos, sizeof(line) - (size_t)pos,
+                        " %3d%%  %s / %s", pct, now_s, tot_s);
+        if (p->ema_speed > 0.0) {
+            format_bytes((curl_off_t)p->ema_speed, spd_s, sizeof spd_s);
+            pos += snprintf(line + pos, sizeof(line) - (size_t)pos,
+                            "  %s/s", spd_s);
+            if (p->n_samples >= 2 && dltotal > dlnow) {
+                double eta = (double)(dltotal - dlnow) / p->ema_speed;
+                format_eta(eta, eta_s, sizeof eta_s);
+                pos += snprintf(line + pos, sizeof(line) - (size_t)pos,
+                                "  eta %s", eta_s);
+            }
+        }
+        /* Clear any leftover from a previous longer line. */
+        pos += snprintf(line + pos, sizeof(line) - (size_t)pos, "\033[K");
+        fwrite(line, 1, (size_t)pos, stderr);
+    } else {
+        /* Unknown total: bytes + speed only, no bar/ETA. */
+        if (p->ema_speed > 0.0) {
+            format_bytes((curl_off_t)p->ema_speed, spd_s, sizeof spd_s);
+            fprintf(stderr, "\r  %s  %s/s\033[K", now_s, spd_s);
+        } else {
+            fprintf(stderr, "\r  %s\033[K", now_s);
+        }
     }
     fflush(stderr);
     return 0;
@@ -239,7 +405,8 @@ bool glyph_url_is_allowed(const char *url)
     return false;
 }
 
-int glyph_download_file(const char *url, const char *dest_path, bool resume)
+int glyph_download_file(const char *url, const char *dest_path, bool resume,
+                        const glyph_dl_opts_t *opts)
 {
     if (url == NULL || dest_path == NULL) {
         glyph_log_err("download: url and dest_path must not be NULL");
@@ -249,6 +416,9 @@ int glyph_download_file(const char *url, const char *dest_path, bool resume)
         glyph_log_err("refusing non-HTTPS URL: %s", url);
         return -1;
     }
+
+    struct dl_progress prog;
+    progress_init(&prog, opts);
 
     CURL *curl = curl_easy_init();
     if (curl == NULL) {
@@ -284,27 +454,33 @@ int glyph_download_file(const char *url, const char *dest_path, bool resume)
         glyph_log_err("download: libcurl option setup failed for '%s'", url);
         ret = -1;
     } else {
-        /* Enable progress + route body into the file handle. */
-        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, xferinfo_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
         if (do_resume) {
             curl_easy_setopt(curl, CURLOPT_RESUME_FROM_LARGE, resume_from);
         }
 
+        if (prog.show_bar) {
+            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+            curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, xferinfo_cb);
+            curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &prog);
+            progress_start(&prog);
+        } else {
+            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+        }
+
         CURLcode rc = curl_easy_perform(curl);
-        /* Terminate the carriage-return progress line on its own line. */
-        fputc('\n', stderr);
-        fflush(stderr);
         debug_trace_curl(curl, url);
 
         if (rc != CURLE_OK) {
+            progress_clear_bar(&prog);
             glyph_log_err("download failed for '%s': %s",
                           url, curl_easy_strerror(rc));
-            /* Leave the partial file in place; a later call with resume=true
-             * can pick up where we left off. */
             ret = -1;
+        } else {
+            curl_off_t total_dl = 0;
+            (void)curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD_T, &total_dl);
+            progress_finish(&prog, total_dl);
         }
     }
 
@@ -317,13 +493,15 @@ int glyph_download_file(const char *url, const char *dest_path, bool resume)
     return ret;
 }
 
-int glyph_download_memory(const char *url, char **out_buf, size_t *out_len)
+int glyph_download_memory(const char *url, char **out_buf, size_t *out_len,
+                          const glyph_dl_opts_t *opts)
 {
-    return glyph_download_memory_status(url, out_buf, out_len, NULL);
+    return glyph_download_memory_status(url, out_buf, out_len, NULL, opts);
 }
 
 int glyph_download_memory_status(const char *url, char **out_buf,
-                                 size_t *out_len, long *out_http_status)
+                                 size_t *out_len, long *out_http_status,
+                                 const glyph_dl_opts_t *opts)
 {
     if (out_buf == NULL || out_len == NULL) {
         glyph_log_err("download: out_buf and out_len must not be NULL");
@@ -344,6 +522,9 @@ int glyph_download_memory_status(const char *url, char **out_buf,
         return -1;
     }
 
+    struct dl_progress prog;
+    progress_init(&prog, opts);
+
     CURL *curl = curl_easy_init();
     if (curl == NULL) {
         glyph_log_err("download: curl_easy_init failed");
@@ -361,10 +542,18 @@ int glyph_download_memory_status(const char *url, char **out_buf,
         glyph_log_err("download: libcurl option setup failed for '%s'", url);
         ret = -1;
     } else {
-        /* In-memory fetch: keep stderr clean (NOPROGRESS=1). No resume. */
-        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_mem_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &mem);
+
+        /* Enable progress only when label + progress are both set. */
+        if (prog.show_bar) {
+            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+            curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, xferinfo_cb);
+            curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &prog);
+            progress_start(&prog);
+        } else {
+            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+        }
 
         CURLcode rc = curl_easy_perform(curl);
         debug_trace_curl(curl, url);
@@ -379,12 +568,16 @@ int glyph_download_memory_status(const char *url, char **out_buf,
             }
         }
         if (rc != CURLE_OK) {
+            progress_clear_bar(&prog);
             glyph_log_err("download failed for '%s': %s",
                           url, curl_easy_strerror(rc));
             free(mem.data);
             mem.data = NULL;
             ret = -1;
         } else {
+            curl_off_t total_dl = 0;
+            (void)curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD_T, &total_dl);
+            progress_finish(&prog, total_dl);
             /* Guarantee one extra byte for a NUL terminator so callers that
              * treat the buffer as text are safe. *out_len reports the real
              * byte count, which may legitimately be zero. */
